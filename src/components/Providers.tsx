@@ -28,7 +28,7 @@ export const useAppContext = () => {
 
 export function Providers({ children }: { children: React.ReactNode }) {
   const [wallet, setWallet] = useState<WalletState>(mockWalletState);
-  const [selectedCluster, setSelectedCluster] = useState<Cluster>('devnet');
+  const [selectedCluster, setSelectedCluster] = useState<Cluster>('localnet');
 
   // Setup wallet adapters
   const wallets = useMemo(

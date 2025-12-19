@@ -12,6 +12,7 @@ import { Badge } from '../components/Badge';
 import { Modal } from '../components/Modal';
 import { mockTokens, maskAddress, mockClusters, Cluster } from '../mockData';
 import { validateAddress, formatAddress, estimateTransactionFee, lamportsToSol } from '../services/solana';
+import { fetchSystemStatus, SystemStatus, sendTransfer } from '../lib/api';
 
 interface SendFormState {
   recipient: string;
@@ -28,14 +29,14 @@ interface SendResult {
 }
 
 export default function SendPage() {
-  const { selectedCluster } = useAppContext();
+  const { selectedCluster, setSelectedCluster } = useAppContext();
   const { publicKey, sendTransaction, connected } = useWallet();
   const { connection } = useConnection();
   const clusterLabel = mockClusters.find(c => c.name === selectedCluster)?.label || selectedCluster;
 
   const [form, setForm] = useState<SendFormState>({
     recipient: '',
-    token: 'USDC',
+    token: 'SOL',
     amount: '',
   });
   const [showReview, setShowReview] = useState(false);
@@ -58,6 +59,12 @@ export default function SendPage() {
       fetchFee();
     }
   }, [connected, publicKey, connection]);
+
+  const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null);
+
+  useEffect(() => {
+    fetchSystemStatus().then(setSystemStatus);
+  }, []);
 
   const fetchBalance = async () => {
     if (!publicKey) return;
@@ -120,19 +127,23 @@ export default function SendPage() {
     setIsSending(true);
 
     try {
-      // Create transaction
-      const toPubkey = new PublicKey(form.recipient);
-      const lamportsToSend = Math.round(parseFloat(form.amount) * 1e9);
+      // 1. Request Transaction from Backend
+      const result = await sendTransfer({
+        payer: publicKey.toBase58(),
+        recipient: form.recipient,
+        amount: form.amount,
+        token: form.token
+      });
 
-      const transaction = new Transaction().add(
-        SystemProgram.transfer({
-          fromPubkey: publicKey,
-          toPubkey: toPubkey,
-          lamports: lamportsToSend,
-        })
-      );
+      if (result.status === 'failed' || !result.transaction) {
+        throw new Error('Failed to create transaction');
+      }
 
-      // Send transaction
+      // 2. Deserialize Transaction
+      const txBuffer = Buffer.from(result.transaction, 'base64');
+      const transaction = Transaction.from(txBuffer);
+
+      // 3. User Signs & Sends
       const signature = await sendTransaction(transaction, connection);
 
       setSendResult({
@@ -141,6 +152,11 @@ export default function SendPage() {
         timestamp: new Date().toISOString(),
         receiptId: `rcpt-${Date.now()}`,
       });
+
+      // Monitor transaction status
+      setTimeout(() => {
+        setSendResult(prev => prev ? { ...prev, status: 'confirmed' } : null);
+      }, 2000);
 
       // Monitor transaction status
       setTimeout(() => {
@@ -248,6 +264,31 @@ export default function SendPage() {
         </p>
       </div>
 
+      {systemStatus && (
+        <div style={{ 
+          marginBottom: `${space.md}px`, 
+          padding: `${space.sm}px ${space.md}px`, 
+          background: colors.surface2, 
+          borderRadius: radii.md,
+          display: 'flex',
+          alignItems: 'center',
+          gap: space.sm,
+          fontSize: '13px'
+        }}>
+          <div style={{ 
+            width: '8px', 
+            height: '8px', 
+            borderRadius: '50%', 
+            background: systemStatus.connected ? colors.success : colors.danger 
+          }} />
+          <span style={{ color: colors.textMuted }}>System:</span>
+          <span style={{ color: colors.text }}>{systemStatus.system}</span>
+          <span style={{ color: colors.textMuted }}>•</span>
+          <span style={{ color: colors.textMuted }}>v{systemStatus.version}</span>
+        </div>
+      )}
+
+
       <Card>
         <div style={{ display: 'flex', flexDirection: 'column', gap: `${space.xl}px` }}>
           {/* Balance Info */}
@@ -255,15 +296,30 @@ export default function SendPage() {
             <div style={{
               display: 'flex',
               justifyContent: 'space-between',
+              alignItems: 'center', // Align items nicely
               padding: `${space.md}px ${space.lg}px`,
               background: colors.surface2,
               borderRadius: `${radii.md}px`,
               fontSize: '13px',
+              marginBottom: `${space.md}px` // Add some space below
             }}>
-              <span style={{ color: colors.textMuted }}>SOL Balance</span>
-              <span style={{ color: colors.text, fontWeight: '600' }}>
-                {balanceLoading ? '...' : `${balance.toFixed(4)} SOL`}
-              </span>
+              <div>
+                 <span style={{ color: colors.textMuted, marginRight: space.sm }}>Cluster:</span>
+                 <select 
+                    value={selectedCluster} 
+                    onChange={(e) => setSelectedCluster(e.target.value as Cluster)}
+                    style={{ background: 'transparent', color: colors.text, border: 'none', fontWeight: '600', cursor: 'pointer' }}
+                 >
+                    {mockClusters.map(c => <option key={c.name} value={c.name}>{c.label}</option>)}
+                 </select>
+              </div>
+
+               <div style={{ display: 'flex', gap: space.md }}>
+                  <span style={{ color: colors.textMuted }}>SOL Balance</span>
+                  <span style={{ color: colors.text, fontWeight: '600' }}>
+                    {balanceLoading ? '...' : `${balance.toFixed(4)} SOL`}
+                  </span>
+               </div>
             </div>
           ) : (
             <Card variant="outlined" style={{ borderColor: colors.warning }}>

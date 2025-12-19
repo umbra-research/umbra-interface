@@ -7,27 +7,65 @@ import { useAppContext } from '../../components/Providers';
 import { Card } from '../../components/Card';
 import { Badge } from '../../components/Badge';
 import { Button } from '../../components/Button';
-import { mockInboxItems, mockAddresses, mockClusters } from '../../mockData';
+import { mockAddresses } from '../../mockData';
 import { formatAddress } from '../../services/solana';
+import { fetchInbox, claimFunds, InboxItem } from '../../lib/api';
+
+// UI Model (extends/wraps API model)
+interface InboxUIItem extends InboxItem {
+    senderMasked: string;
+    cluster: string;
+}
 
 export default function InboxPage() {
   const { selectedCluster } = useAppContext();
   const { publicKey, connected } = useWallet();
   const [selectedFilter, setSelectedFilter] = useState<'all' | 'claimable' | 'claimed'>('all');
   const [refreshing, setRefreshing] = useState(false);
+  const [claiming, setClaiming] = useState(false);
+  const [inboxItems, setInboxItems] = useState<InboxUIItem[]>([]);
 
-  const items = mockInboxItems.filter(item => 
-    item.cluster === selectedCluster &&
-    (selectedFilter === 'all' || 
-     (selectedFilter === 'claimable' && item.status === 'claimable') ||
-     (selectedFilter === 'claimed' && item.status === 'claimed'))
-  );
+  const handleClaim = async () => {
+      if (!publicKey) return;
+      setClaiming(true);
+      try {
+          const res = await claimFunds(publicKey.toBase58());
+          if (res.status === 'success') {
+              alert(`Claimed! Signatures: ${res.signatures?.join(', ')}`);
+              handleRefresh(); 
+          } else {
+              alert(`Claim Failed: ${res.error}`);
+          }
+      } catch (e) {
+          alert('Claim Error: ' + e);
+      } finally {
+          setClaiming(false);
+      }
+  };
+
+  // Initial fetch when connected
+  React.useEffect(() => {
+      if (connected && publicKey) {
+          handleRefresh();
+      }
+  }, [connected, publicKey]);
 
   const handleRefresh = async () => {
+    if (!publicKey) return;
     setRefreshing(true);
-    // TODO: Fetch real claimable transfers from backend/contract
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    setRefreshing(false);
+    try {
+        const items = await fetchInbox(publicKey.toBase58());
+        const mappedItems: InboxUIItem[] = items.map(i => ({
+            ...i,
+            cluster: 'localnet', 
+            senderMasked: formatAddress(i.payer),
+        }));
+        setInboxItems(mappedItems);
+    } catch (e) {
+        console.error(e);
+    } finally {
+        setRefreshing(false);
+    }
   };
 
   const defaultAddr = mockAddresses.find(a => a.isDefault);
@@ -42,6 +80,13 @@ export default function InboxPage() {
       default: return 'default';
     }
   };
+
+  // Filter items
+  const items = inboxItems.filter(item => 
+    (selectedFilter === 'all' || 
+     (selectedFilter === 'claimable' && item.status === 'claimable') ||
+     (selectedFilter === 'claimed' && item.status === 'claimed'))
+  );
 
   return (
     <div style={{ maxWidth: '600px', margin: '0 auto' }}>
@@ -146,8 +191,14 @@ export default function InboxPage() {
                 {item.timestamp}
               </div>
               {item.status === 'claimable' && (
-                <Button variant="primary" size="sm" fullWidth>
-                  Claim
+                <Button 
+                    variant="primary" 
+                    size="sm" 
+                    fullWidth 
+                    onClick={handleClaim}
+                    disabled={claiming}
+                >
+                  {claiming ? 'Claiming...' : 'Claim'}
                 </Button>
               )}
             </Card>
