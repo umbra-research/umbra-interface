@@ -1,6 +1,8 @@
 /* Google Fonts Import */
 @import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;700&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
+@import "tailwindcss";
+
 :root {
   color-scheme: dark;
   
@@ -33,7 +35,7 @@ body {
   background: var(--bg);
   color: var(--text);
   min-height: 100vh;
-  overflow-x: hidden;
+  min-height: 100vh;
   
   /* Modern ambient background */
   background-image: 
@@ -122,6 +124,7 @@ button {
 
 .text-gradient-gold {
   background: linear-gradient(135deg, #D4AF37 0%, #F8E7A6 50%, #D4AF37 100%);
+  background-clip: text;
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-size: 200% auto;
@@ -134,6 +137,28 @@ button {
   transform: scale(0.96);
 }
 
+
 .input:focus {
   outline: none;
+}
+
+/* Landing Page Typography */
+.cinzel-font {
+  font-family: var(--font-display);
+}
+
+.ancient-text {
+  font-family: var(--font-display); 
+  letter-spacing: 0.05em;
+}
+
+/* 3D Transform Utilities */
+.preserve-3d {
+  transform-style: preserve-3d;
+}
+.perspective-2000 {
+  perspective: 2000px;
+}
+.backface-hidden {
+  backface-visibility: hidden;
 }

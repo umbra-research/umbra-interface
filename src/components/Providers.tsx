@@ -16,6 +16,8 @@ export interface AppContextType {
   setWallet: (state: WalletState) => void;
   selectedCluster: Cluster;
   setSelectedCluster: (cluster: Cluster) => void;
+  showUI: boolean;
+  setShowUI: (visible: boolean) => void;
 }
 
 export const AppContext = React.createContext<AppContextType | undefined>(undefined);
@@ -29,6 +31,7 @@ export const useAppContext = () => {
 export function Providers({ children }: { children: React.ReactNode }) {
   const [wallet, setWallet] = useState<WalletState>(mockWalletState);
   const [selectedCluster, setSelectedCluster] = useState<Cluster>('localnet');
+  const [showUI, setShowUI] = useState(true);
 
   // Setup wallet adapters
   const wallets = useMemo(
@@ -45,7 +48,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
     <ConnectionProvider endpoint={endpoint}>
       <SolanaWalletProvider wallets={wallets} autoConnect>
         <WalletModalProvider>
-          <AppContext.Provider value={{ wallet, setWallet, selectedCluster, setSelectedCluster }}>
+          <AppContext.Provider value={{ wallet, setWallet, selectedCluster, setSelectedCluster, showUI, setShowUI }}>
             {children}
           </AppContext.Provider>
         </WalletModalProvider>

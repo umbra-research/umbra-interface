@@ -18,12 +18,12 @@ import { formatAddress } from '../services/solana';
 
 export const AppShell: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const pathname = usePathname();
-  const { selectedCluster, setSelectedCluster } = useAppContext();
+  const { selectedCluster, setSelectedCluster, showUI } = useAppContext();
   const { connected, publicKey } = useWallet();
   const [showClusterMenu, setShowClusterMenu] = React.useState(false);
 
   const navItems = [
-    { path: '/', label: 'Transfer', icon: '↗' }, 
+    { path: '/dashboard', label: 'Transfer', icon: '↗' }, 
     { path: '/inbox', label: 'Inbox', icon: '📥' }, 
     { path: '/activity', label: 'Activity', icon: '⚡' },
   ];
@@ -38,7 +38,6 @@ export const AppShell: React.FC<{ children: React.ReactNode }> = ({ children }) 
         minHeight: '100vh',
         background: colors.bg,
         color: colors.text,
-        overflow: 'hidden'
       }}
     >
       {/* Top Bar (Floating Glass) */}
@@ -48,7 +47,7 @@ export const AppShell: React.FC<{ children: React.ReactNode }> = ({ children }) 
           top: 0,
           zIndex: 50,
           padding: `${space.sm}px ${space.lg}px`,
-          display: 'flex',
+          display: showUI && pathname !== '/' ? 'flex' : 'none',
           justifyContent: 'space-between',
           alignItems: 'center',
           background: 'rgba(0, 0, 0, 0.6)',
@@ -66,7 +65,9 @@ export const AppShell: React.FC<{ children: React.ReactNode }> = ({ children }) 
           WebkitTextFillColor: 'transparent',
           letterSpacing: '0.02em',
         }}>
+          <Link href='/'>
            UMBRA
+          </Link>
         </div>
 
         {/* Cluster & Wallet */}
@@ -186,55 +187,57 @@ export const AppShell: React.FC<{ children: React.ReactNode }> = ({ children }) 
       </div>
 
       {/* Floating Bottom Nav (Mobile/Desktop Unified for modern feel) */}
-      <div
-        style={{
-          position: 'fixed',
-          bottom: '24px',
-          left: '50%',
-          transform: 'translateX(-50%)',
-          zIndex: 40,
-        }}
-      >
-        <div style={{
-          display: 'flex',
-          padding: '6px',
-          background: 'rgba(20, 20, 20, 0.8)',
-          backdropFilter: 'blur(20px)',
-          borderRadius: '999px',
-          border: '1px solid rgba(255, 255, 255, 0.1)',
-          boxShadow: shadows.lg,
-          gap: '4px',
-        }}>
-          {navItems.map(item => {
-            const isActive = pathname === item.path;
-            return (
-              <Link
-                key={item.path}
-                href={item.path}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '8px',
-                  padding: '10px 20px',
-                  borderRadius: '999px',
-                  textDecoration: 'none',
-                  color: isActive ? '#000' : colors.textSecondary,
-                  background: isActive ? colors.accentGradient : 'transparent',
-                  fontSize: '14px',
-                  fontWeight: isActive ? 600 : 500,
-                  transition: motion.fast,
-                  boxShadow: isActive ? shadows.glowSm : 'none',
-                }}
-              >
-                <div style={{ fontSize: '16px' }}>
-                  {item.icon}
-                </div>
-                {item.label}
-              </Link>
-            );
-          })}
+      {showUI && pathname !== '/' && (
+        <div
+          style={{
+            position: 'fixed',
+            bottom: '24px',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            zIndex: 40,
+          }}
+        >
+          <div style={{
+            display: 'flex',
+            padding: '6px',
+            background: 'rgba(20, 20, 20, 0.8)',
+            backdropFilter: 'blur(20px)',
+            borderRadius: '999px',
+            border: '1px solid rgba(255, 255, 255, 0.1)',
+            boxShadow: shadows.lg,
+            gap: '4px',
+          }}>
+            {navItems.map(item => {
+              const isActive = pathname === item.path;
+              return (
+                <Link
+                  key={item.path}
+                  href={item.path}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    padding: '10px 20px',
+                    borderRadius: '999px',
+                    textDecoration: 'none',
+                    color: isActive ? '#000' : colors.textSecondary,
+                    background: isActive ? colors.accentGradient : 'transparent',
+                    fontSize: '14px',
+                    fontWeight: isActive ? 600 : 500,
+                    transition: motion.fast,
+                    boxShadow: isActive ? shadows.glowSm : 'none',
+                  }}
+                >
+                  <div style={{ fontSize: '16px' }}>
+                    {item.icon}
+                  </div>
+                  {item.label}
+                </Link>
+              );
+            })}
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 };
