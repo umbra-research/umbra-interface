@@ -1,545 +1,555 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
-import { useWallet, useConnection } from '@solana/wallet-adapter-react';
-import { PublicKey, Transaction, SystemProgram } from '@solana/web3.js';
-import { colors, space, radii, typography } from '../../theme';
-import { useAppContext } from '../../components/Providers';
-import { Button } from '../../components/Button';
-import { Input } from '../../components/Input';
+import React, { useState, useEffect, useCallback } from 'react';
+import { useWallet } from '@solana/wallet-adapter-react';
+import { useWalletModal } from '@solana/wallet-adapter-react-ui';
+import { colors, space, radii, typography, shadows, motion } from '../../theme';
 import { Card } from '../../components/Card';
-import { Badge } from '../../components/Badge';
-import { Modal } from '../../components/Modal';
-import { mockTokens, maskAddress, mockClusters, Cluster } from '../../mockData';
-import { validateAddress, formatAddress, estimateTransactionFee, lamportsToSol } from '../../services/solana';
-import { fetchSystemStatus, SystemStatus, sendTransfer } from '../../lib/api';
+import { Button } from '../../components/Button';
+import { UmbraService } from '../../services/umbra';
+import { useSyncEngine } from '../../hooks/useSyncEngine';
+import { SendForm } from '../../components/SendForm';
+import { WithdrawForm } from '../../components/WithdrawForm';
 
-interface SendFormState {
-  recipient: string;
-  token: string;
-  amount: string;
-  memo?: string;
+// ───────────────────────────── Types ─────────────────────────────
+interface UmbraKeys {
+  viewPub: string;
+  spendPub: string;
+  viewSecret: string;
+  spendSecret: string;
 }
 
-interface SendResult {
-  status: 'submitted' | 'confirmed' | 'finalized' | 'failed';
-  signature: string;
-  timestamp: string;
-  receiptId: string;
-}
+// ───────────────────────────── Dashboard ─────────────────────────────
+export default function Dashboard() {
+  const { publicKey, connected } = useWallet();
+  const { setVisible } = useWalletModal();
 
-export default function SendPage() {
-  const { selectedCluster, setSelectedCluster } = useAppContext();
-  const { publicKey, sendTransaction, connected } = useWallet();
-  const { connection } = useConnection();
-  const clusterLabel = mockClusters.find(c => c.name === selectedCluster)?.label || selectedCluster;
+  // Identity state
+  const [identity, setIdentity] = useState<UmbraKeys | null>(null);
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [wasmReady, setWasmReady] = useState(false);
+  const [showSecrets, setShowSecrets] = useState(false);
+  const [copied, setCopied] = useState<string | null>(null);
+  const [showBackupPrompt, setShowBackupPrompt] = useState(false);
 
-  const [form, setForm] = useState<SendFormState>({
-    recipient: '',
-    token: 'SOL',
-    amount: '',
-  });
-  const [showReview, setShowReview] = useState(false);
-  const [sendResult, setSendResult] = useState<SendResult | null>(null);
-  const [errors, setErrors] = useState<Record<string, string>>({});
-  const [revealRecipient, setRevealRecipient] = useState(false);
-  const [holdingToReveal, setHoldingToReveal] = useState(false);
-  const [balance, setBalance] = useState(0);
-  const [balanceLoading, setBalanceLoading] = useState(false);
-  const [fee, setFee] = useState(0);
-  const [isSending, setIsSending] = useState(false);
+  // Active view
+  const [activeTab, setActiveTab] = useState<'send' | 'withdraw'>('send');
 
-  const clusterTokens = mockTokens.filter(t => t.cluster === selectedCluster);
-  const selectedTokenData = clusterTokens.find(t => t.symbol === form.token);
+  // Sync engine
+  const userId = publicKey?.toBase58() || null;
+  const viewSecret = identity?.viewSecret || null;
+  const { isScanning, ownedItems, scan } = useSyncEngine(viewSecret, userId);
 
-  // Fetch balance on wallet connect
+  const claimableCount = ownedItems.filter(i => i.status === 'Pending').length;
+  const claimableAmount = ownedItems
+    .filter(i => i.status === 'Pending')
+    .reduce((acc, i) => acc + (i.amount || 0), 0);
+
+  // ── Init WASM ──
   useEffect(() => {
-    if (connected && publicKey) {
-      fetchBalance();
-      fetchFee();
-    }
-  }, [connected, publicKey, connection]);
-
-  const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null);
-
-  useEffect(() => {
-    fetchSystemStatus().then(setSystemStatus);
+    UmbraService.init()
+      .then(() => setWasmReady(true))
+      .catch((e) => console.error('WASM init failed:', e));
   }, []);
 
-  const fetchBalance = async () => {
-    if (!publicKey) return;
-    setBalanceLoading(true);
-    try {
-      const lamports = await connection.getBalance(publicKey);
-      setBalance(lamportsToSol(lamports));
-    } catch (error) {
-      console.error('Error fetching balance:', error);
-    } finally {
-      setBalanceLoading(false);
-    }
-  };
-
-  const fetchFee = async () => {
-    try {
-      const feeAmount = await estimateTransactionFee(selectedCluster);
-      setFee(feeAmount);
-    } catch (error) {
-      setFee(0.00005); // Default fallback
-    }
-  };
-
-  const validateForm = () => {
-    const newErrors: Record<string, string> = {};
-
-    if (!form.recipient.trim()) {
-      newErrors.recipient = 'Recipient address is required';
-    } else if (!validateAddress(form.recipient)) {
-      newErrors.recipient = 'Invalid Solana address';
-    }
-
-    if (!form.amount) {
-      newErrors.amount = 'Amount is required';
-    } else {
-      const amountNum = parseFloat(form.amount);
-      if (isNaN(amountNum) || amountNum <= 0) {
-        newErrors.amount = 'Amount must be greater than 0';
-      } else if (amountNum + fee > balance) {
-        newErrors.amount = `Insufficient balance (need ${(amountNum + fee).toFixed(6)} SOL)`;
-      }
-    }
-
-    setErrors(newErrors);
-    return Object.keys(newErrors).length === 0;
-  };
-
-  const handleReview = () => {
-    if (validateForm()) {
-      setShowReview(true);
-    }
-  };
-
-  const handleConfirmSend = async () => {
-    if (!publicKey || !connected || !sendTransaction) {
-      setErrors({ form: 'Wallet not connected' });
+  // ── Load or generate identity per wallet ──
+  useEffect(() => {
+    if (!connected || !publicKey || !wasmReady) {
+      setIdentity(null);
       return;
     }
 
-    setIsSending(true);
-
-    try {
-      // 1. Request Transaction from Backend
-      const result = await sendTransfer({
-        payer: publicKey.toBase58(),
-        recipient: form.recipient,
-        amount: form.amount,
-        token: form.token
-      });
-
-      if (result.status === 'failed' || !result.transaction) {
-        throw new Error('Failed to create transaction');
-      }
-
-      // 2. Deserialize Transaction
-      const txBuffer = Buffer.from(result.transaction, 'base64');
-      const transaction = Transaction.from(txBuffer);
-
-      // 3. User Signs & Sends
-      const signature = await sendTransaction(transaction, connection);
-
-      setSendResult({
-        status: 'submitted',
-        signature: signature,
-        timestamp: new Date().toISOString(),
-        receiptId: `rcpt-${Date.now()}`,
-      });
-
-      // Monitor transaction status
-      setTimeout(() => {
-        setSendResult(prev => prev ? { ...prev, status: 'confirmed' } : null);
-      }, 2000);
-
-      // Monitor transaction status
-      setTimeout(() => {
-        setSendResult(prev => prev ? { ...prev, status: 'confirmed' } : null);
-      }, 2000);
-
-      setTimeout(() => {
-        setSendResult(prev => prev ? { ...prev, status: 'finalized' } : null);
-      }, 5000);
-
-      setShowReview(false);
-    } catch (error: any) {
-      console.error('Send error:', error);
-      setSendResult({
-        status: 'failed',
-        signature: '',
-        timestamp: new Date().toISOString(),
-        receiptId: '',
-      });
-    } finally {
-      setIsSending(false);
+    const storageKey = `umbra_identity_${publicKey.toBase58()}`;
+    const stored = localStorage.getItem(storageKey);
+    if (stored) {
+      try { setIdentity(JSON.parse(stored)); } 
+      catch { setIdentity(null); }
     }
+  }, [connected, publicKey, wasmReady]);
+
+  // ── Generate identity ──
+  const handleGenerateIdentity = useCallback(async () => {
+    if (!wasmReady || !publicKey) return;
+    setIsGenerating(true);
+    try {
+      const id = await UmbraService.generateIdentity();
+      const json = id.to_json();
+      const data = JSON.parse(json);
+      
+      const keys: UmbraKeys = {
+        viewPub: data.viewPub,
+        spendPub: data.spendPub,
+        viewSecret: data.viewSecret,
+        spendSecret: data.spendSecret,
+      };
+      
+      // Free the WASM memory
+      id.free();
+      
+      setIdentity(keys);
+      localStorage.setItem(`umbra_identity_${publicKey.toBase58()}`, JSON.stringify(keys));
+      setShowBackupPrompt(true);
+    } catch (e) {
+      console.error('Identity generation failed:', e);
+    } finally {
+      setIsGenerating(false);
+    }
+  }, [wasmReady, publicKey]);
+
+  // ── Export identity as encrypted JSON ──
+  const handleExportIdentity = useCallback(() => {
+    if (!identity) return;
+    const blob = new Blob([JSON.stringify(identity, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `umbra-identity-${publicKey?.toBase58().slice(0, 8)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    setShowBackupPrompt(false);
+  }, [identity, publicKey]);
+
+  // ── Copy to clipboard ──
+  const copyToClipboard = (text: string, label: string) => {
+    navigator.clipboard.writeText(text);
+    setCopied(label);
+    setTimeout(() => setCopied(null), 2000);
   };
 
-  const handleReset = () => {
-    setForm({ recipient: '', token: 'USDC', amount: '' });
-    setSendResult(null);
-    setErrors({});
-  };
+  // ── Stealth address for sharing ──
+  const stealthAddress = identity ? `${identity.viewPub}:${identity.spendPub}` : '';
 
-  if (sendResult) {
+  // ─────────────────── RENDER ───────────────────
+
+  // Not connected
+  if (!connected) {
     return (
-      <div style={{ maxWidth: '600px', margin: '0 auto' }}>
-        <Card 
-          variant="glass"
-          style={{ animation: 'fadeIn 0.4s ease-out', borderColor: sendResult.status === 'failed' ? colors.danger : colors.border }}
-        >
-          <div style={{ textAlign: 'center' }}>
-            <div style={{ 
-              fontSize: '56px',
-              marginBottom: `${space.lg}px`,
-              animation: sendResult.status === 'finalized' ? 'slideInUp 0.5s ease-out 0.2s both' : 'pulse 1.5s ease-in-out infinite'
-            }}>
-              {sendResult.status === 'finalized' ? '✓' : 
-               sendResult.status === 'failed' ? '✕' : '⏳'}
-            </div>
-            <div style={{ ...typography.h2, marginBottom: `${space.md}px` }}>
-              {sendResult.status === 'submitted' ? 'Broadcasting transfer...' :
-               sendResult.status === 'confirmed' ? 'Confirming transaction...' :
-               sendResult.status === 'finalized' ? 'Transfer Finalized!' :
-               'Transfer Failed'}
-            </div>
-
-            {sendResult.status !== 'finalized' && (
-              <div style={{
-                fontSize: '13px',
-                color: colors.textMuted,
-                marginBottom: `${space.lg}px`,
+      <div style={{ maxWidth: '520px', margin: '0 auto', padding: `${space.xxl}px ${space.lg}px` }}>
+        <div style={{ textAlign: 'center' }}>
+          <div style={{ 
+            fontSize: '64px', 
+            marginBottom: `${space.xl}px`,
+            filter: 'drop-shadow(0 0 30px rgba(212, 175, 55, 0.3))'
+          }}>
+            🛡️
+          </div>
+          <h1 style={{ ...typography.h1, color: colors.accent, marginBottom: `${space.md}px` }}>
+            Umbra Protocol
+          </h1>
+          <p style={{ 
+            ...typography.body, 
+            color: colors.textSecondary, 
+            marginBottom: `${space.xxl}px`,
+            maxWidth: '400px',
+            margin: `0 auto ${space.xxl}px`
+          }}>
+            Private payments on Solana. No mixing pools. No trusted setup. Just math.
+          </p>
+          <Button variant="primary" size="lg" onClick={() => setVisible(true)}>
+            Connect Wallet
+          </Button>
+          <div style={{ 
+            marginTop: `${space.xxl}px`,
+            display: 'grid',
+            gridTemplateColumns: '1fr 1fr 1fr',
+            gap: `${space.md}px`
+          }}>
+            {[
+              { icon: '🔐', label: 'Stealth Addresses' },
+              { icon: '⚡', label: 'Gasless Claims' },
+              { icon: '💬', label: 'Encrypted Memos' },
+            ].map(f => (
+              <div key={f.label} style={{ 
+                padding: `${space.md}px`,
+                background: colors.surface,
+                borderRadius: radii.md,
+                border: `1px solid ${colors.border}`,
+                textAlign: 'center'
               }}>
-                This may take a few moments.
+                <div style={{ fontSize: '24px', marginBottom: `${space.xs}px` }}>{f.icon}</div>
+                <div style={{ fontSize: '11px', color: colors.textMuted }}>{f.label}</div>
               </div>
-            )}
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
-            {sendResult.status === 'finalized' && (
-              <>
-                <Card variant="flat" style={{ marginBottom: `${space.lg}px`, textAlign: 'left', background: 'rgba(64, 224, 208, 0.05)' }}>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: `${space.md}px`, fontSize: '12px' }}>
-                    <div>
-                      <div style={{ color: colors.textMuted, marginBottom: `${space.xs}px` }}>Receipt ID</div>
-                      <div style={{ fontFamily: 'monospace', color: colors.text, wordBreak: 'break-all' }}>
-                        {sendResult.receiptId}
-                      </div>
-                    </div>
-                    <div>
-                      <div style={{ color: colors.textMuted, marginBottom: `${space.xs}px` }}>Signature</div>
-                      <div style={{ fontFamily: 'monospace', color: colors.text, wordBreak: 'break-all' }}>
-                        {sendResult.signature}
-                      </div>
-                    </div>
+  // Connected but no identity — Onboarding
+  if (!identity) {
+    return (
+      <div style={{ maxWidth: '520px', margin: '0 auto', padding: `${space.xxl}px ${space.lg}px` }}>
+        <div style={{ textAlign: 'center', marginBottom: `${space.xxl}px` }}>
+          <div style={{ 
+            width: '80px', height: '80px', 
+            borderRadius: '50%', 
+            background: `linear-gradient(135deg, ${colors.accent}20, ${colors.accent}05)`,
+            border: `2px solid ${colors.accent}40`,
+            display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+            fontSize: '32px', marginBottom: `${space.lg}px`
+          }}>
+            🔑
+          </div>
+          <h2 style={{ ...typography.h2, color: colors.text, marginBottom: `${space.md}px` }}>
+            Generate Your Stealth Identity
+          </h2>
+          <p style={{ ...typography.bodySm, color: colors.textSecondary, maxWidth: '380px', margin: '0 auto' }}>
+            Create a cryptographic keypair that lets others send you private payments. 
+            Only you can scan and claim them.
+          </p>
+        </div>
+
+        <Card style={{ marginBottom: `${space.lg}px` }}>
+          <div style={{ padding: `${space.md}px` }}>
+            {/* Step indicators */}
+            <div style={{ display: 'flex', gap: `${space.md}px`, marginBottom: `${space.xl}px` }}>
+              {['Connect Wallet', 'Generate Identity', 'Backup Keys'].map((step, i) => (
+                <div key={step} style={{ flex: 1, textAlign: 'center' }}>
+                  <div style={{
+                    width: '32px', height: '32px',
+                    borderRadius: '50%',
+                    background: i === 0 ? colors.accent : i === 1 ? colors.surface2 : colors.surface,
+                    border: `2px solid ${i === 0 ? colors.accent : i === 1 ? colors.accent + '60' : colors.border}`,
+                    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                    fontSize: '14px', fontWeight: '700',
+                    color: i === 0 ? colors.accentContrast : i === 1 ? colors.accent : colors.textMuted,
+                    marginBottom: `${space.xs}px`
+                  }}>
+                    {i === 0 ? '✓' : i + 1}
                   </div>
-                </Card>
-
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: `${space.md}px` }}>
-                  <Button variant="secondary" onClick={handleReset}>
-                    Send Another
-                  </Button>
-                  <Button variant="primary">
-                    View Activity
-                  </Button>
+                  <div style={{ fontSize: '11px', color: i <= 1 ? colors.text : colors.textMuted }}>
+                    {step}
+                  </div>
                 </div>
-              </>
-            )}
+              ))}
+            </div>
+
+            <Button 
+              variant="primary" 
+              fullWidth
+              size="lg"
+              onClick={handleGenerateIdentity}
+              disabled={isGenerating || !wasmReady}
+            >
+              {!wasmReady ? '○ Initializing Crypto Engine...' : isGenerating ? '⟳ Computing Keys...' : '🔑 Generate Stealth Identity'}
+            </Button>
+
+            <div style={{ 
+              marginTop: `${space.md}px`, 
+              fontSize: '12px', 
+              color: colors.textMuted,
+              textAlign: 'center'
+            }}>
+              Uses ECDH on Curve25519 — no trusted setup required
+            </div>
           </div>
         </Card>
       </div>
     );
   }
 
+  // ─── Main Dashboard (Connected + Identity) ───
   return (
-    <div style={{ maxWidth: '600px', margin: '0 auto' }}>
-      <div style={{ marginBottom: `${space.lg}px` }}>
-        <h1 style={typography.h1}>Send Anonymous Transfer</h1>
-        <p style={{ ...typography.bodySm, color: colors.textMuted }}>
-          Send funds anonymously to any Solana address on {mockClusters.find(c => c.name === selectedCluster)?.label || selectedCluster}.
-        </p>
-      </div>
-
-      {systemStatus && (
-        <div style={{ 
-          marginBottom: `${space.md}px`, 
-          padding: `${space.sm}px ${space.md}px`, 
-          background: colors.surface2, 
-          borderRadius: radii.md,
-          display: 'flex',
-          alignItems: 'center',
-          gap: space.sm,
-          fontSize: '13px'
+    <div style={{ maxWidth: '520px', margin: '0 auto', padding: `${space.md}px ${space.md}px ${space.huge}px` }}>
+      
+      {/* ── Backup Prompt ── */}
+      {showBackupPrompt && (
+        <Card style={{ 
+          marginBottom: `${space.lg}px`,
+          borderColor: colors.warning + '60',
+          background: colors.warningLight,
         }}>
-          <div style={{ 
-            width: '8px', 
-            height: '8px', 
-            borderRadius: '50%', 
-            background: systemStatus.connected ? colors.success : colors.danger 
-          }} />
-          <span style={{ color: colors.textMuted }}>System:</span>
-          <span style={{ color: colors.text }}>{systemStatus.system}</span>
-          <span style={{ color: colors.textMuted }}>•</span>
-          <span style={{ color: colors.textMuted }}>v{systemStatus.version}</span>
-        </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: `${space.md}px` }}>
+            <div style={{ fontSize: '24px' }}>⚠️</div>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: '14px', fontWeight: '600', color: colors.warning, marginBottom: '4px' }}>
+                Backup Your Identity
+              </div>
+              <div style={{ fontSize: '12px', color: colors.textSecondary }}>
+                Without a backup, you lose access to all stealth payments forever.
+              </div>
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: `${space.sm}px`, marginTop: `${space.md}px` }}>
+            <Button variant="primary" size="sm" onClick={handleExportIdentity} style={{ flex: 1 }}>
+              ⬇ Download Backup
+            </Button>
+            <Button variant="ghost" size="sm" onClick={() => setShowBackupPrompt(false)} style={{ flex: 0 }}>
+              Later
+            </Button>
+          </div>
+        </Card>
       )}
 
-
-      <Card>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: `${space.xl}px` }}>
-          {/* Balance Info */}
-          {connected ? (
-            <div style={{
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center', // Align items nicely
-              padding: `${space.md}px ${space.lg}px`,
-              background: colors.surface2,
-              borderRadius: `${radii.md}px`,
-              fontSize: '13px',
-              marginBottom: `${space.md}px` // Add some space below
-            }}>
-              <div>
-                 <span style={{ color: colors.textMuted, marginRight: space.sm }}>Cluster:</span>
-                 <select 
-                    value={selectedCluster} 
-                    onChange={(e) => setSelectedCluster(e.target.value as Cluster)}
-                    style={{ background: 'transparent', color: colors.text, border: 'none', fontWeight: '600', cursor: 'pointer' }}
-                 >
-                    {mockClusters.map(c => <option key={c.name} value={c.name}>{c.label}</option>)}
-                 </select>
-              </div>
-
-               <div style={{ display: 'flex', gap: space.md }}>
-                  <span style={{ color: colors.textMuted }}>SOL Balance</span>
-                  <span style={{ color: colors.text, fontWeight: '600' }}>
-                    {balanceLoading ? '...' : `${balance.toFixed(4)} SOL`}
-                  </span>
-               </div>
-            </div>
-          ) : (
-            <Card variant="outlined" style={{ borderColor: colors.warning }}>
-              <div style={{ fontSize: '13px', color: colors.warning }}>
-                ⚠ Connect your wallet to send transfers
-              </div>
-            </Card>
-          )}
-
-          {/* Recipient */}
-          <Input
-            label="Recipient Address"
-            placeholder="9xQe..."
-            value={form.recipient}
-            onChange={(e) => {
-              setForm({ ...form, recipient: e.target.value });
-              if (errors.recipient) setErrors({ ...errors, recipient: '' });
-            }}
-            error={errors.recipient}
-            clearable
-            onClear={() => setForm({ ...form, recipient: '' })}
-          />
-
-          {/* Token Select */}
+      {/* ── Identity Card ── */}
+      <Card style={{ marginBottom: `${space.md}px` }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: `${space.md}px` }}>
           <div>
-            <label style={{
-              display: 'block',
-              fontSize: '14px',
-              fontWeight: '500',
-              color: colors.text,
-              marginBottom: `${space.sm}px`,
-            }}>
-              Token
-            </label>
-            <select
-              value={form.token}
-              onChange={(e) => setForm({ ...form, token: e.target.value })}
-              style={{
-                width: '100%',
-                padding: `${space.md}px ${space.lg}px`,
-                background: colors.surface2,
-                border: `1px solid ${colors.border}`,
-                borderRadius: `${radii.md}px`,
-                color: colors.text,
-                cursor: 'pointer',
-                fontSize: '14px',
-              }}
-            >
-              {clusterTokens.map(t => (
-                <option key={t.symbol} value={t.symbol}>
-                  {t.name} ({t.symbol})
-                </option>
-              ))}
-            </select>
-          </div>
-
-          {/* Amount */}
-          <Input
-            label="Amount (SOL)"
-            placeholder="0.00"
-            type="number"
-            step="0.00001"
-            min="0"
-            value={form.amount}
-            onChange={(e) => {
-              setForm({ ...form, amount: e.target.value });
-              if (errors.amount) setErrors({ ...errors, amount: '' });
-            }}
-            error={errors.amount}
-          />
-
-          {/* Fee Estimate */}
-          <Card variant="flat" style={{ background: 'rgba(64, 224, 208, 0.05)' }}>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: `${space.sm}px`, fontSize: '13px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span>Network Fee</span>
-                <span style={{ fontWeight: '600' }}>~{fee.toFixed(6)} SOL</span>
-              </div>
-              <div style={{ borderTop: `1px solid ${colors.border}`, paddingTop: `${space.sm}px`, display: 'flex', justifyContent: 'space-between', fontWeight: '600' }}>
-                <span>Total Cost</span>
-                <span>{(parseFloat(form.amount || '0') + fee).toFixed(6)} SOL</span>
-              </div>
+            <div style={{ fontSize: '11px', color: colors.textMuted, textTransform: 'uppercase', letterSpacing: '1px' }}>
+              Stealth Identity
             </div>
-          </Card>
-
-          {/* Submit */}
-          <Button
-            variant="primary"
-            size="lg"
-            fullWidth
-            onClick={handleReview}
-            disabled={!connected || isSending}
-          >
-            {isSending ? 'Sending...' : !connected ? 'Connect Wallet' : 'Review & Send'}
-          </Button>
+            <div style={{ 
+              fontSize: '13px', color: colors.accent, fontFamily: typography.fontMono, 
+              marginTop: '4px', cursor: 'pointer',
+              wordBreak: 'break-all',
+              maxWidth: '280px',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+            title={stealthAddress}
+            onClick={() => copyToClipboard(stealthAddress, 'address')}
+            >
+              {stealthAddress.slice(0, 20)}...{stealthAddress.slice(-12)}
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: `${space.xs}px` }}>
+            <ActionButton 
+              icon={copied === 'address' ? '✓' : '📋'} 
+              label="Copy" 
+              onClick={() => copyToClipboard(stealthAddress, 'address')} 
+            />
+            <ActionButton icon="⬇️" label="Export" onClick={handleExportIdentity} />
+          </div>
         </div>
+
+        {/* Expandable secrets */}
+        <button
+          onClick={() => setShowSecrets(!showSecrets)}
+          style={{
+            width: '100%',
+            padding: `${space.sm}px`,
+            background: showSecrets ? colors.dangerLight : colors.surface2,
+            border: `1px solid ${showSecrets ? colors.danger + '30' : colors.border}`,
+            borderRadius: radii.sm,
+            color: showSecrets ? colors.danger : colors.textMuted,
+            fontSize: '11px',
+            cursor: 'pointer',
+            transition: motion.fast,
+            textAlign: 'center',
+          }}
+        >
+          {showSecrets ? '▼ Hide Secret Keys' : '► View Secret Keys (sensitive)'}
+        </button>
+
+        {showSecrets && (
+          <div style={{ 
+            marginTop: `${space.sm}px`, 
+            padding: `${space.md}px`,
+            background: colors.dangerLight,
+            borderRadius: radii.sm,
+            border: `1px solid ${colors.danger}20`,
+          }}>
+            <SecretRow label="View Secret" value={identity.viewSecret} onCopy={copyToClipboard} copied={copied} />
+            <SecretRow label="Spend Secret" value={identity.spendSecret} onCopy={copyToClipboard} copied={copied} />
+            <div style={{ fontSize: '10px', color: colors.danger, marginTop: `${space.sm}px`, textAlign: 'center' }}>
+              ⚠ Never share your secret keys. Anyone with these can steal your funds.
+            </div>
+          </div>
+        )}
       </Card>
 
-      {/* Review Modal */}
-      <Modal
-        isOpen={showReview}
-        onClose={() => {
-          setShowReview(false);
-          setRevealRecipient(false);
-          setHoldingToReveal(false);
-        }}
-        title="Review Transfer"
-        size="md"
-        footer={
-          <>
-            <Button variant="secondary" onClick={() => {
-              setShowReview(false);
-              setRevealRecipient(false);
-              setHoldingToReveal(false);
-            }}>
-              Back
-            </Button>
-            <Button variant="primary" onClick={handleConfirmSend} disabled={!revealRecipient || isSending}>
-              {isSending ? 'Sending...' : 'Confirm Transfer'}
-            </Button>
-          </>
-        }
-      >
-        <div style={{ display: 'flex', flexDirection: 'column', gap: `${space.lg}px` }}>
-          {/* Recipient (Hold-to-Reveal) */}
-          <div
+      {/* ── Claimable Alert ── */}
+      {claimableCount > 0 && (
+        <Card 
+          hoverable
+          onClick={() => setActiveTab('withdraw')}
+          style={{ 
+            marginBottom: `${space.md}px`,
+            cursor: 'pointer',
+            borderColor: colors.success + '40',
+            background: colors.successLight,
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: `${space.md}px` }}>
+              <div style={{ 
+                width: '40px', height: '40px', borderRadius: '50%',
+                background: colors.success + '20', 
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontSize: '20px'
+              }}>💰</div>
+              <div>
+                <div style={{ fontSize: '14px', fontWeight: '600', color: colors.success }}>
+                  {claimableCount} payment{claimableCount > 1 ? 's' : ''} claimable
+                </div>
+                <div style={{ fontSize: '12px', color: colors.textSecondary }}>
+                  Tap to withdraw funds
+                </div>
+              </div>
+            </div>
+            <div style={{ fontSize: '14px', color: colors.success }}>→</div>
+          </div>
+        </Card>
+      )}
+
+      {/* ── Tab Switcher ── */}
+      <div style={{ 
+        display: 'flex', 
+        gap: '2px',
+        marginBottom: `${space.md}px`,
+        background: colors.surface,
+        borderRadius: radii.md,
+        padding: '3px',
+        border: `1px solid ${colors.border}`,
+      }}>
+        {(['send', 'withdraw'] as const).map(tab => (
+          <button
+            key={tab}
+            onClick={() => setActiveTab(tab)}
             style={{
-              padding: `${space.lg}px`,
-              background: colors.surface2,
-              borderRadius: `${radii.md}px`,
-              border: `1px solid ${revealRecipient ? colors.accent : colors.border}`,
-              cursor: 'default',
-              userSelect: 'none',
-              transition: `all 0.2s ease`,
+              flex: 1,
+              padding: `${space.sm}px`,
+              borderRadius: `calc(${radii.md} - 3px)`,
+              background: activeTab === tab ? colors.surface3 : 'transparent',
+              border: 'none',
+              color: activeTab === tab ? colors.text : colors.textMuted,
+              fontSize: '13px',
+              fontWeight: activeTab === tab ? '600' : '400',
+              cursor: 'pointer',
+              transition: motion.fast,
             }}
-            onMouseDown={() => setHoldingToReveal(true)}
-            onMouseUp={() => setHoldingToReveal(false)}
-            onMouseLeave={() => setHoldingToReveal(false)}
-            onTouchStart={() => setHoldingToReveal(true)}
-            onTouchEnd={() => setHoldingToReveal(false)}
           >
-            <div style={{ fontSize: '13px', color: colors.textMuted, marginBottom: `${space.sm}px` }}>
-              Recipient (hold to reveal full address)
+            {tab === 'send' ? '📤 Send' : `📥 Withdraw${claimableCount > 0 ? ` (${claimableCount})` : ''}`}
+          </button>
+        ))}
+      </div>
+
+      {/* ── Active Form ── */}
+      <Card style={{ marginBottom: `${space.md}px` }}>
+        {activeTab === 'send' ? (
+          <SendForm />
+        ) : (
+          <WithdrawForm
+            items={ownedItems}
+            identity={identity}
+            onClaimSuccess={() => scan()}
+          />
+        )}
+      </Card>
+
+      {/* ── Recent Activity ── */}
+      {ownedItems.length > 0 && (
+        <Card>
+          <div style={{ 
+            display: 'flex', 
+            justifyContent: 'space-between', 
+            alignItems: 'center',
+            marginBottom: `${space.md}px`
+          }}>
+            <div style={{ fontSize: '13px', fontWeight: '600', color: colors.text }}>
+              ⚡ Recent Stealth Signals
             </div>
-            <div style={{
-              fontSize: '16px',
-              fontWeight: '600',
-              color: revealRecipient || holdingToReveal ? colors.text : colors.textMuted,
-              fontFamily: 'monospace',
-              transition: `color 0.2s ease`,
-            }}>
-              {(revealRecipient || holdingToReveal) ? form.recipient : maskAddress(form.recipient)}
-            </div>
+            <button 
+              onClick={() => scan()}
+              disabled={isScanning}
+              style={{
+                background: 'none', border: 'none', 
+                color: colors.accent, fontSize: '12px', cursor: 'pointer',
+                opacity: isScanning ? 0.5 : 1,
+              }}
+            >
+              {isScanning ? '⟳ Scanning...' : '↻ Refresh'}
+            </button>
           </div>
-
-          {/* Cluster & Token & Amount */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: `${space.md}px` }}>
-            <div>
-              <div style={{ fontSize: '11px', color: colors.textMuted, marginBottom: `${space.xs}px`, fontWeight: '500' }}>
-                CLUSTER
+          <div style={{ display: 'flex', flexDirection: 'column', gap: `${space.sm}px` }}>
+            {ownedItems.slice(0, 5).map((item, i) => (
+              <div key={item.id || i} style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                padding: `${space.sm}px ${space.md}px`,
+                background: colors.surface,
+                borderRadius: radii.sm,
+                border: `1px solid ${colors.border}`,
+              }}>
+                <div>
+                  <div style={{ fontSize: '13px', color: colors.text }}>
+                    {item.plaintext || 'Stealth Payment'}
+                  </div>
+                  <div style={{ fontSize: '11px', color: colors.textMuted }}>
+                    {new Date(item.timestamp).toLocaleString()}
+                  </div>
+                </div>
+                <div style={{ 
+                  fontSize: '11px', 
+                  padding: '2px 8px',
+                  borderRadius: radii.full,
+                  background: item.status === 'Pending' ? colors.successLight : colors.surface2,
+                  color: item.status === 'Pending' ? colors.success : colors.textMuted,
+                  fontWeight: '600'
+                }}>
+                  {item.status === 'Pending' ? 'Claimable' : 'Claimed'}
+                </div>
               </div>
-              <div style={{ fontSize: '14px', fontWeight: '600' }}>
-                {clusterLabel}
-              </div>
-            </div>
-            <div>
-              <div style={{ fontSize: '11px', color: colors.textMuted, marginBottom: `${space.xs}px`, fontWeight: '500' }}>
-                TOKEN
-              </div>
-              <div style={{ fontSize: '14px', fontWeight: '600' }}>
-                {form.token}
-              </div>
-            </div>
-            <div>
-              <div style={{ fontSize: '11px', color: colors.textMuted, marginBottom: `${space.xs}px`, fontWeight: '500' }}>
-                AMOUNT
-              </div>
-              <div style={{ fontSize: '14px', fontWeight: '600' }}>
-                {form.amount}
-              </div>
-            </div>
+            ))}
           </div>
-
-          {/* Fee Breakdown */}
-          <Card variant="flat" style={{ background: 'rgba(64, 224, 208, 0.05)' }}>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: `${space.sm}px`, fontSize: '13px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', color: colors.text }}>
-                <span>Network Fee</span>
-                <span style={{ fontWeight: '600' }}>~0.00025 SOL</span>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', color: colors.text }}>
-                <span>Service Fee</span>
-                <span style={{ fontWeight: '600' }}>~0.0005 SOL</span>
-              </div>
-              <div style={{ borderTop: `1px solid ${colors.border}`, paddingTop: `${space.sm}px`, display: 'flex', justifyContent: 'space-between', fontWeight: '600', color: colors.accent }}>
-                <span>Total</span>
-                <span>~0.00075 SOL</span>
-              </div>
-            </div>
-          </Card>
-
-          {/* Safety Notice */}
-          <Card variant="outlined" style={{ borderColor: colors.warning }}>
-            <div style={{ fontSize: '13px', color: colors.warning }}>
-              ⚠ <strong>Irreversible</strong> — Double-check the recipient address. Transfers cannot be reversed.
-            </div>
-          </Card>
-
-          {/* Checkbox to acknowledge */}
-          <label style={{ display: 'flex', alignItems: 'center', gap: `${space.md}px`, cursor: 'pointer', fontSize: '13px', color: colors.text }}>
-            <input
-              type="checkbox"
-              checked={revealRecipient}
-              onChange={(e) => setRevealRecipient(e.target.checked)}
-              style={{ width: '18px', height: '18px', cursor: 'pointer' }}
-            />
-            I've verified the recipient address
-          </label>
-        </div>
-      </Modal>
+        </Card>
+      )}
     </div>
   );
 }
+
+// ─────────────────── Sub-Components ───────────────────
+
+const ActionButton = ({ icon, label, onClick }: { icon: string; label: string; onClick: () => void }) => (
+  <button
+    onClick={onClick}
+    title={label}
+    style={{
+      width: '36px', height: '36px',
+      borderRadius: radii.sm,
+      background: colors.surface2,
+      border: `1px solid ${colors.border}`,
+      color: colors.text,
+      fontSize: '14px',
+      cursor: 'pointer',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      transition: motion.fast,
+    }}
+  >
+    {icon}
+  </button>
+);
+
+const SecretRow = ({ label, value, onCopy, copied }: { 
+  label: string; value: string; onCopy: (text: string, label: string) => void; copied: string | null;
+}) => (
+  <div style={{ marginBottom: `${space.sm}px` }}>
+    <div style={{ 
+      display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+      marginBottom: '2px'
+    }}>
+      <span style={{ fontSize: '10px', color: colors.danger, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+        {label}
+      </span>
+      <button
+        onClick={() => onCopy(value, label)}
+        style={{
+          background: 'none', border: 'none', color: colors.danger,
+          fontSize: '10px', cursor: 'pointer', opacity: 0.7,
+        }}
+      >
+        {copied === label ? '✓ Copied' : 'Copy'}
+      </button>
+    </div>
+    <div style={{
+      fontFamily: typography.fontMono,
+      fontSize: '11px',
+      color: colors.danger,
+      wordBreak: 'break-all',
+      padding: '6px',
+      background: 'rgba(0,0,0,0.2)',
+      borderRadius: '4px',
+      filter: 'blur(3px)',
+      cursor: 'pointer',
+      transition: 'filter 0.2s',
+    }}
+    onMouseEnter={(e) => (e.currentTarget.style.filter = 'none')}
+    onMouseLeave={(e) => (e.currentTarget.style.filter = 'blur(3px)')}
+    >
+      {value}
+    </div>
+  </div>
+);

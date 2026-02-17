@@ -1,13 +1,12 @@
+'use client';
 import React from 'react';
-import { UmbraHomepage } from '../components/UmbraHomepage';
-
-export const metadata = {
-  title: 'Umbra | The Forbidden Ledger',
-  description: 'Anonymous Solana Privacy Protocol',
-};
+import { Hero } from '../components/Hero';
+import { Layout } from '../components/Layout';
 
 export default function Page() {
   return (
-    <UmbraHomepage />
+    <Layout>
+        <Hero />
+    </Layout>
   );
 }

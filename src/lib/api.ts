@@ -28,6 +28,7 @@ export interface SendRequest {
   recipient: string;
   amount: string;
   token: string;
+  memo?: string;
 }
 
 export interface SendResponse {
@@ -85,16 +86,15 @@ export async function fetchInbox(recipient: string): Promise<InboxItem[]> {
 
 export interface ClaimResponse {
     status: string;
-    signatures?: string[];
     error?: string;
 }
 
-export async function claimFunds(recipient: string): Promise<ClaimResponse> {
+export async function claimFunds(id: string, recipient: string): Promise<ClaimResponse> {
     try {
-        const res = await fetch(`${API_BASE_URL}/api/claim`, {
+        const res = await fetch(`${API_BASE_URL}/claim`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ recipient }),
+            body: JSON.stringify({ id, recipient }),
         });
         if (!res.ok) {
             const text = await res.text();

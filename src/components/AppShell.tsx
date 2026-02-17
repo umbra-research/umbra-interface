@@ -182,7 +182,7 @@ export const AppShell: React.FC<{ children: React.ReactNode }> = ({ children }) 
       </div>
 
       {/* Main Content */}
-      <div style={{ flex: 1, padding: `${space.xl}px ${space.lg}px`, maxWidth: '1200px', margin: '0 auto', width: '100%' }}>
+      <div style={{ flex: 1, padding: `${space.xl}px ${space.lg}px 120px`, maxWidth: '1200px', margin: '0 auto', width: '100%' }}>
         {children}
       </div>
 

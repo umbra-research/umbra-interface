@@ -1,217 +1,276 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
-import { useWallet } from '@solana/wallet-adapter-react';
-import { colors, space, radii, typography } from '../../theme';
-import { useAppContext } from '../../components/Providers';
+import React, { useState, useEffect, useCallback } from 'react';
+import { useWallet, useConnection } from '@solana/wallet-adapter-react';
+import { useWalletModal } from '@solana/wallet-adapter-react-ui';
+import { colors, space, radii, typography, motion } from '../../theme';
 import { Card } from '../../components/Card';
-import { Badge } from '../../components/Badge';
 import { Button } from '../../components/Button';
-import { Input } from '../../components/Input';
-import { mockActivity } from '../../mockData';
-import { formatAddress, getWalletTransactions, Cluster } from '../../services/solana';
+import { useSyncEngine } from '../../hooks/useSyncEngine';
 
-interface Transaction {
+interface WalletTx {
   signature: string;
-  status: 'submitted' | 'confirmed' | 'finalized' | 'failed';
+  status: 'confirmed' | 'finalized' | 'failed';
   timestamp: Date | null;
   fee: number;
+  slot?: number;
 }
 
+type ActivitySource = 'all' | 'stealth' | 'wallet';
+
 export default function ActivityPage() {
-  const { selectedCluster } = useAppContext();
   const { publicKey, connected } = useWallet();
-  const [transactions, setTransactions] = useState<Transaction[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [selectedType, setSelectedType] = useState<'all' | 'sent' | 'received'>('all');
-  const [selectedStatus, setSelectedStatus] = useState<'all' | 'confirmed' | 'submitted' | 'failed'>('all');
-  const [search, setSearch] = useState('');
+  const { setVisible } = useWalletModal();
+  const { connection } = useConnection();
 
-  // Fetch real transactions from wallet
+  // Tabs
+  const [source, setSource] = useState<ActivitySource>('all');
+
+  // Wallet transactions
+  const [walletTxs, setWalletTxs] = useState<WalletTx[]>([]);
+  const [loadingWallet, setLoadingWallet] = useState(false);
+
+  // Stealth data
+  const [identity, setIdentity] = useState<any>(null);
+  const userId = publicKey?.toBase58() || null;
+  const viewSecret = identity?.viewSecret || null;
+  const { ownedItems } = useSyncEngine(viewSecret, userId);
+
+  // Load identity
   useEffect(() => {
-    if (connected && publicKey) {
-      fetchTransactions();
-      const interval = setInterval(fetchTransactions, 15000);
-      return () => clearInterval(interval);
-    } else {
-      setTransactions([]);
+    if (!connected || !publicKey) { setIdentity(null); return; }
+    const stored = localStorage.getItem(`umbra_identity_${publicKey.toBase58()}`);
+    if (stored) {
+      try { setIdentity(JSON.parse(stored)); } catch { /* ignore */ }
     }
-  }, [connected, publicKey, selectedCluster]);
+  }, [connected, publicKey]);
 
-  const fetchTransactions = async () => {
+  // Fetch wallet transactions
+  const fetchWalletTxs = useCallback(async () => {
     if (!publicKey) return;
-    setLoading(true);
+    setLoadingWallet(true);
     try {
-      const txs = await getWalletTransactions(selectedCluster as Cluster, publicKey, 20);
-      setTransactions(txs);
-    } catch (error) {
-      console.error('Error fetching transactions:', error);
+      const sigs = await connection.getSignaturesForAddress(publicKey, { limit: 20 });
+      const txs: WalletTx[] = sigs.map(sig => ({
+        signature: sig.signature,
+        status: sig.err ? 'failed' : sig.confirmationStatus === 'finalized' ? 'finalized' : 'confirmed',
+        timestamp: sig.blockTime ? new Date(sig.blockTime * 1000) : null,
+        fee: 5000, // lamports, approximate
+        slot: sig.slot,
+      }));
+      setWalletTxs(txs);
+    } catch (e) {
+      console.error('Failed to fetch wallet transactions:', e);
     } finally {
-      setLoading(false);
+      setLoadingWallet(false);
     }
-  };
+  }, [publicKey, connection]);
 
-  // Fallback to mock data
-  const items = connected && publicKey && transactions.length > 0 
-    ? transactions 
-    : mockActivity.filter(item => {
-        const matchCluster = item.cluster === selectedCluster;
-        const matchType = selectedType === 'all' || 
-          (selectedType === 'sent' && item.type === 'Sent') ||
-          (selectedType === 'received' && item.type === 'Received');
-        const matchStatus = selectedStatus === 'all' || item.status === selectedStatus;
-        const matchSearch = !search || 
-          item.token.includes(search.toUpperCase()) ||
-          item.counterpartyMasked.includes(search);
-        
-        return matchCluster && matchType && matchStatus && matchSearch;
-      });
+  useEffect(() => {
+    if (connected && publicKey) fetchWalletTxs();
+  }, [connected, publicKey, fetchWalletTxs]);
 
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case 'confirmed': return 'success';
-      case 'finalized': return 'success';
-      case 'submitted': return 'info';
-      case 'failed': return 'danger';
-      default: return 'default';
-    }
-  };
+  // ── Not Connected ──
+  if (!connected) {
+    return (
+      <div style={{ maxWidth: '520px', margin: '0 auto', padding: `${space.xxl}px ${space.lg}px`, textAlign: 'center' }}>
+        <div style={{ fontSize: '48px', marginBottom: `${space.lg}px` }}>📊</div>
+        <h1 style={{ ...typography.h2, color: colors.text, marginBottom: `${space.md}px` }}>Activity</h1>
+        <p style={{ ...typography.bodySm, color: colors.textSecondary, marginBottom: `${space.xl}px` }}>
+          Connect your wallet to view transaction history
+        </p>
+        <Button variant="primary" onClick={() => setVisible(true)}>Connect Wallet</Button>
+      </div>
+    );
+  }
+
+  // Build combined activity feed
+  const stealthActivity = ownedItems.map(item => ({
+    type: 'stealth' as const,
+    id: item.id,
+    label: item.plaintext || 'Stealth Payment',
+    status: item.status === 'Pending' ? 'claimable' : 'claimed',
+    timestamp: new Date(item.timestamp),
+    signature: item.signature,
+    payer: item.payer,
+  }));
+
+  const walletActivity = walletTxs.map(tx => ({
+    type: 'wallet' as const,
+    id: tx.signature.slice(0, 16),
+    label: 'Wallet Transaction',
+    status: tx.status,
+    timestamp: tx.timestamp,
+    signature: tx.signature,
+    payer: null,
+    fee: tx.fee,
+  }));
+
+  const allActivity = [...stealthActivity, ...walletActivity]
+    .sort((a, b) => (b.timestamp?.getTime() || 0) - (a.timestamp?.getTime() || 0));
+
+  const displayItems = source === 'stealth' ? stealthActivity :
+                        source === 'wallet' ? walletActivity : allActivity;
 
   return (
-    <div style={{ maxWidth: '700px', margin: '0 auto' }}>
-      <div style={{ marginBottom: `${space.lg}px` }}>
-        <h1 style={typography.h1}>Activity</h1>
-        <p style={{ ...typography.bodySm, color: colors.textMuted }}>
-          {connected ? 'Your transaction history' : 'View transfer activity'}
-        </p>
-      </div>
-
-      {/* Filters */}
-      <div style={{ marginBottom: `${space.lg}px`, display: 'flex', flexDirection: 'column', gap: `${space.md}px` }}>
-        <Input
-          placeholder="Search signature or address..."
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          clearable
-          onClear={() => setSearch('')}
-        />
-
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: `${space.md}px` }}>
-          <select
-            value={selectedType}
-            onChange={(e) => setSelectedType(e.target.value as any)}
-            style={{
-              width: '100%',
-              padding: `${space.sm}px ${space.md}px`,
-              background: colors.surface2,
-              border: `1px solid ${colors.border}`,
-              borderRadius: `${radii.md}px`,
-              color: colors.text,
-              fontSize: '13px',
-              height: '44px',
-            }}
-          >
-            <option value="all">All Types</option>
-            <option value="sent">Sent</option>
-            <option value="received">Received</option>
-          </select>
-
-          <select
-            value={selectedStatus}
-            onChange={(e) => setSelectedStatus(e.target.value as any)}
-            style={{
-              width: '100%',
-              padding: `${space.sm}px ${space.md}px`,
-              background: colors.surface2,
-              border: `1px solid ${colors.border}`,
-              borderRadius: `${radii.md}px`,
-              color: colors.text,
-              fontSize: '13px',
-              height: '44px',
-            }}
-          >
-            <option value="all">All Status</option>
-            <option value="confirmed">Confirmed</option>
-            <option value="submitted">Submitted</option>
-            <option value="failed">Failed</option>
-          </select>
-
-          <Button
-            variant="secondary"
-            size="md"
-            fullWidth
-            onClick={() => {
-              setSelectedType('all');
-              setSelectedStatus('all');
-              setSearch('');
-              if (connected) fetchTransactions();
-            }}
-            disabled={loading}
-          >
-            {loading ? 'Refreshing...' : 'Refresh'}
-          </Button>
+    <div style={{ maxWidth: '520px', margin: '0 auto', padding: `${space.md}px ${space.md}px ${space.huge}px` }}>
+      {/* Header */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: `${space.lg}px` }}>
+        <div>
+          <h1 style={{ ...typography.h2, color: colors.text, marginBottom: '2px' }}>Activity</h1>
+          <p style={{ fontSize: '13px', color: colors.textSecondary }}>
+            {stealthActivity.length} stealth · {walletActivity.length} on-chain
+          </p>
         </div>
+        <Button 
+          variant="secondary" 
+          size="sm" 
+          onClick={fetchWalletTxs}
+          disabled={loadingWallet}
+        >
+          {loadingWallet ? '⟳...' : '↻ Refresh'}
+        </Button>
       </div>
 
-      {/* Activity List */}
-      {!connected ? (
-        <Card variant="outlined" style={{ borderColor: colors.warning }}>
-          <div style={{ textAlign: 'center', padding: `${space.lg}px` }}>
-            <div style={{ fontSize: '32px', marginBottom: `${space.md}px` }}>🔐</div>
-            <div style={{ color: colors.warning }}>
-              Connect your wallet to see transaction history
-            </div>
-          </div>
-        </Card>
-      ) : items.length === 0 ? (
-        <Card variant="glass">
-          <div style={{ textAlign: 'center', padding: `${space.lg}px` }}>
-            <div style={{ fontSize: '32px', marginBottom: `${space.md}px` }}>📭</div>
-            <div style={{ color: colors.textMuted }}>
-              No activity found
-            </div>
-          </div>
-        </Card>
-      ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: `${space.md}px` }}>
-          {items.map((item: any, idx: number) => (
-            <Card key={item.signature || item.id || idx} hoverable>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', marginBottom: `${space.md}px` }}>
-                <div>
-                  <div style={{ fontSize: '14px', fontWeight: '600', color: colors.text }}>
-                    {item.signature ? 'Transaction' : item.type}
-                  </div>
-                  <div style={{ fontSize: '12px', color: colors.textMuted, marginTop: `${space.xs}px` }}>
-                    {item.signature ? formatAddress(item.signature) : (item.counterpartyMasked || 'Unknown')}
-                  </div>
-                </div>
-                <Badge variant={item.signature ? getStatusColor(item.status) : 'default'}>
-                  {item.signature ? (item.status === 'finalized' ? '✓✓' : item.status === 'confirmed' ? '✓' : item.status === 'submitted' ? '⏳' : '✕') : (item.status || '•')}
-                </Badge>
-              </div>
+      {/* Source Tabs */}
+      <div style={{
+        display: 'flex',
+        gap: '2px',
+        marginBottom: `${space.md}px`,
+        background: colors.surface,
+        borderRadius: radii.md,
+        padding: '3px',
+        border: `1px solid ${colors.border}`,
+      }}>
+        {[
+          { key: 'all' as const, label: 'All' },
+          { key: 'stealth' as const, label: `Stealth (${stealthActivity.length})` },
+          { key: 'wallet' as const, label: `On-chain (${walletActivity.length})` },
+        ].map(tab => (
+          <button
+            key={tab.key}
+            onClick={() => setSource(tab.key)}
+            style={{
+              flex: 1,
+              padding: `${space.sm}px`,
+              borderRadius: `calc(${radii.md} - 3px)`,
+              background: source === tab.key ? colors.surface3 : 'transparent',
+              border: 'none',
+              color: source === tab.key ? colors.text : colors.textMuted,
+              fontSize: '12px',
+              fontWeight: source === tab.key ? '600' : '400',
+              cursor: 'pointer',
+              transition: motion.fast,
+            }}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
 
-              <div style={{ fontSize: '12px', color: colors.textMuted }}>
-                {item.timestamp ? (typeof item.timestamp === 'string' ? item.timestamp : new Date(item.timestamp).toLocaleString()) : '—'}
-              </div>
-
-              {item.signature && (
-                <div style={{
-                  fontSize: '11px',
-                  color: colors.textMuted,
-                  fontFamily: 'monospace',
-                  marginTop: `${space.md}px`,
-                  wordBreak: 'break-all',
-                  padding: `${space.sm}px`,
-                  background: colors.surface2,
-                  borderRadius: `${radii.sm}px`,
-                }}>
-                  {item.signature}
-                </div>
-              )}
-            </Card>
-          ))}
+      {/* Loading */}
+      {loadingWallet && source !== 'stealth' && (
+        <div style={{
+          padding: `${space.sm}px ${space.md}px`,
+          background: colors.infoLight,
+          borderRadius: radii.sm,
+          border: `1px solid ${colors.info}20`,
+          fontSize: '12px',
+          color: colors.info,
+          textAlign: 'center',
+          marginBottom: `${space.md}px`,
+        }}>
+          ⟳ Fetching on-chain transactions...
         </div>
       )}
+
+      {/* Empty State */}
+      {displayItems.length === 0 && !loadingWallet && (
+        <Card style={{ textAlign: 'center', padding: `${space.xxl}px ${space.lg}px` }}>
+          <div style={{ fontSize: '40px', marginBottom: `${space.md}px` }}>📭</div>
+          <div style={{ fontSize: '14px', color: colors.textSecondary }}>No activity found</div>
+          <div style={{ fontSize: '12px', color: colors.textMuted, marginTop: `${space.xs}px` }}>
+            Send or receive a transaction to get started
+          </div>
+        </Card>
+      )}
+
+      {/* Activity Items */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: `${space.sm}px` }}>
+        {displayItems.map((item, idx) => (
+          <Card key={item.id ?? idx} hoverable>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: `${space.sm}px`, marginBottom: '4px' }}>
+                  <span style={{ fontSize: '14px' }}>
+                    {item.type === 'stealth' ? '🛡️' : '💳'}
+                  </span>
+                  <span style={{ fontSize: '14px', fontWeight: '500', color: colors.text }}>
+                    {item.label}
+                  </span>
+                </div>
+
+                {/* Timestamp */}
+                <div style={{ fontSize: '12px', color: colors.textMuted, marginBottom: `${space.xs}px` }}>
+                  {item.timestamp ? item.timestamp.toLocaleString() : 'Unknown time'}
+                </div>
+
+                {/* Signature */}
+                {item.signature && (
+                  <a
+                    href={`https://explorer.solana.com/tx/${item.signature}?cluster=devnet`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{
+                      fontSize: '10px',
+                      fontFamily: typography.fontMono,
+                      color: colors.accent + '80',
+                      textDecoration: 'none',
+                    }}
+                  >
+                    {item.signature.slice(0, 20)}...
+                  </a>
+                )}
+              </div>
+
+              {/* Status Badge */}
+              <StatusBadge status={item.status} type={item.type} />
+            </div>
+          </Card>
+        ))}
+      </div>
     </div>
   );
 }
+
+// ─────────────────── Sub-Components ───────────────────
+
+const StatusBadge = ({ status, type }: { status: string; type: string }) => {
+  const config = (() => {
+    if (type === 'stealth') {
+      return status === 'claimable' 
+        ? { bg: colors.successLight, color: colors.success, label: 'Claimable' }
+        : { bg: colors.surface2, color: colors.textMuted, label: 'Claimed' };
+    }
+    switch (status) {
+      case 'finalized': return { bg: colors.successLight, color: colors.success, label: 'Finalized' };
+      case 'confirmed': return { bg: colors.infoLight, color: colors.info, label: 'Confirmed' };
+      case 'failed': return { bg: colors.dangerLight, color: colors.danger, label: 'Failed' };
+      default: return { bg: colors.surface2, color: colors.textMuted, label: status };
+    }
+  })();
+
+  return (
+    <div style={{
+      padding: `2px ${space.sm}px`,
+      borderRadius: radii.full,
+      background: config.bg,
+      fontSize: '11px',
+      fontWeight: '600',
+      color: config.color,
+      whiteSpace: 'nowrap',
+    }}>
+      {config.label}
+    </div>
+  );
+};

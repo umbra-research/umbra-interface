@@ -4,6 +4,8 @@ import {
   LAMPORTS_PER_SOL,
   Transaction,
   Keypair,
+  TransactionInstruction,
+  SystemProgram,
 } from "@solana/web3.js";
 import {
   TOKEN_PROGRAM_ID,
@@ -11,6 +13,63 @@ import {
   getAccount,
   getAssociatedTokenAddress,
 } from "@solana/spl-token";
+import { PROGRAM_ID } from "./scanner";
+
+const SEND_STEALTH_DISCRIMINATOR = new Uint8Array([0xb6, 0x4e, 0xf1, 0x0c, 0xef, 0xac, 0x3c, 0xc3]);
+
+export const createStealthTransaction = async (
+  connection: Connection,
+  sender: PublicKey,
+  stealthPubkey: PublicKey,
+  ephemeralPubkey: Uint8Array,
+  hashedTag: Uint8Array,
+  ciphertext: Uint8Array,
+  amountSol: number
+): Promise<Transaction> => {
+    // 1. Derive PDA
+    const [stealthPda] = await PublicKey.findProgramAddress(
+        [Buffer.from("stealth"), stealthPubkey.toBuffer()],
+        PROGRAM_ID
+    );
+
+    // 2. Build Data
+    // disc(8) + eph(32) + tag(32) + cipher_len(4) + cipher(...) + amount(8)
+    const amountLamports = solToLamports(amountSol);
+    const amountBuf = Buffer.alloc(8);
+    amountBuf.writeBigUInt64LE(BigInt(amountLamports));
+
+    const cipherLenBuf = Buffer.alloc(4);
+    cipherLenBuf.writeUInt32LE(ciphertext.length);
+    
+    const data = Buffer.concat([
+        SEND_STEALTH_DISCRIMINATOR,
+        ephemeralPubkey,
+        hashedTag,
+        cipherLenBuf,
+        ciphertext,
+        amountBuf
+    ]);
+
+    // 3. Instruction
+    const ix = new TransactionInstruction({
+        keys: [
+            { pubkey: sender, isSigner: true, isWritable: true },
+            { pubkey: stealthPda, isSigner: false, isWritable: true },
+            { pubkey: stealthPubkey, isSigner: false, isWritable: false },
+            { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+        ],
+        programId: PROGRAM_ID,
+        data: data
+    });
+    
+    const tx = new Transaction().add(ix);
+    tx.feePayer = sender;
+    const { blockhash } = await connection.getLatestBlockhash();
+    tx.recentBlockhash = blockhash;
+    
+    return tx;
+};
+
 
 // RPC endpoints
 export const RPC_ENDPOINTS = {
