@@ -20,9 +20,6 @@ const wasmPromise = import('../../../umbra/crates/wasm/pkg/umbra_wasm');
 export const UmbraService = {
   async init() {
     const wasmModule = await wasmPromise;
-    // With `target: web`, default export is the init function.
-    // It returns a promise that resolves to the module instance or exports.
-    // We must await it.
     await wasmModule.default(); 
     const wasm = wasmModule;
     wasm.setup();
@@ -31,10 +28,6 @@ export const UmbraService = {
 
   async generateIdentity(): Promise<UmbraIdentity> {
     const wasm = await wasmPromise;
-    // Assume init called? Or call it?
-    // Safer to rely on `init` being called once at app start.
-    // But `setup` might panic if called twice?
-    // `console_error_panic_hook` usually safe to call multiple times.
     return wasm.UmbraIdentity.generate();
   },
 
@@ -96,8 +89,6 @@ export const UmbraService = {
     
     for (const ann of announcements) {
       try {
-        // Backend now stores ephemeral_pubkey as hex (consistent with WASM)
-        // console.log(`[ScanBatch] Trying to decrypt: ephemeral=${ann.ephemeral_pubkey?.substring(0, 16)}..., cipher=${ann.cipher_text?.substring(0, 16)}...`);
         const plaintext = wasm.decrypt_memo_wasm(viewSkHex, ann.ephemeral_pubkey, ann.cipher_text);
         if (plaintext) {
           console.log(`[ScanBatch] ✅ Decrypted: "${plaintext}" (Status: ${ann.status})`);
@@ -109,7 +100,6 @@ export const UmbraService = {
         }
       } catch (e: any) {
         // Not ours or failed decryption
-        // console.log(`[ScanBatch] ❌ Failed: ${e.message || e}`);
       }
     }
     console.log(`[ScanBatch] Found ${results.length} matching signals`);

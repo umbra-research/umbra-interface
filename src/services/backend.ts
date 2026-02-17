@@ -30,32 +30,12 @@ export const BackendService = {
         }
 
         // Deserialize transaction
-        // Backend uses bincode + base64. 
-        // JS needs to decode base64 and deserialize.
-        // Wait, bincode serialization in Rust is specific. 
-        // Solan web3.js expects buffer for `Transaction.from(buffer)`.
-        // The Rust `serialize(&tx)` produces a bincode blob of the Transaction struct.
-        // Does `Transaction::from(buffer)` in JS match Rust's bincode layout?
-        // NO! Rust bincode layout != Solana wire format.
-        // CRITICAL MISTAKE IN BACKEND IMPLEMENTATION:
-        // I used `bincode::serialize(&tx)`.
-        // I should have used `tx.serialize()` (if available) or constructed the message and serialized IT.
-        // `solana_sdk::transaction::Transaction` has `serialize()`. 
-        // That produces the WIRE FORMAT (bincode compliant usually, but `bincode::serialize(&tx)` might add extra length prefixes or struct overhead if using generic derive?)
-        // `solana_sdk` uses `bincode` for serialization internally for the wire format.
-        // However, `tx.serialize()` is the standard way to get wire bytes.
-        // `bincode::serialize(&tx)` *might* be same as `tx.serialize()`?
-        // Let's verify. `impl Serialize for Transaction` is derived or manual? 
-        // It is manual in `solana_sdk`.
-        // So `bincode::serialize(&tx)` invokes `Transaction::serialize`.
-        // So it should be fine!
-        
+        // Deserialize transaction: Backend returns base64 string
         const buffer = Buffer.from(data.transaction, 'base64');
         try {
             return Transaction.from(buffer);
         } catch (e) {
             // Try versioned?
-            // For now assuming legacy transaction for simple Stealth Send.
              try {
                 return VersionedTransaction.deserialize(buffer);
              } catch (vErr) {
